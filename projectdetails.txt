@@ -1,0 +1,65 @@
+🥷 Project Design: Shadow Clone AR
+1. The Concept
+An Augmented Reality (AR) application that runs on a standard webcam. It displays a "target" hand sign (the Jutsu seal) on the screen. When the user successfully mimics this sign, the system detects it and instantly generates semi-transparent "clones" of the user that mimic their movements in real-time behind them.
+
+2. Tech Stack
+We will keep the stack lightweight so it runs smoothly on a standard laptop.
+
+Language: Python 3.x
+
+Computer Vision: OpenCV (cv2) - For image manipulation and video feed handling.
+
+AI/ML Framework: MediaPipe (Google) - specifically two solutions:
+
+mediapipe.solutions.hands: To detect the finger positions and the specific "Cross" seal.
+
+mediapipe.solutions.selfie_segmentation: To cut your body out of the background without a green screen.
+
+Math/Matrix Ops: NumPy (numpy) - For efficient image array shifting and blending.
+
+3. System Architecture
+The code will run in a continuous while loop (frame-by-frame processing).
+
+Phase A: The UI Overlay (The Guide)
+Asset: A transparent PNG image of the Naruto "Clone Seal" (the cross shape).
+
+Logic: Place this image in the top-right corner or center-bottom of the video feed with 50% opacity. This acts as the instruction for the user.
+
+Phase B: Hand Detection (The Trigger)
+Input: The webcam frame is passed to MediaPipe Hands.
+
+Analysis: The model returns 21 landmarks (3D points) for each hand.
+
+The "Jutsu" Algorithm: We need a custom function is_jutsu_active().
+
+Check 1: Are two hands detected?
+
+Check 2: Are the Index and Middle fingers of both hands extended? (Ring and Pinky should be curled).
+
+Check 3 (The Cross): Is the Left Hand's position intersecting with the Right Hand's position? specifically, are the Index Finger Root (knuckles) of one hand close to the other?
+
+Status: If these conditions are met, set variable CLONE_MODE = True.
+
+Phase C: Segmentation & Cloning (The Effect)
+If CLONE_MODE is True:
+
+Extract User: Pass the frame to MediaPipe Selfie Segmentation. It returns a Binary Mask (White = User, Black = Background).
+
+Create Clone Layer: Use the mask to copy only the user's pixels from the current frame.
+
+Shift: Use NumPy to "roll" or shift this pixel array to the left (-100 pixels) and right (+100 pixels).
+
+Stylize (Optional): Apply a slight blue tint or reduce the alpha (opacity) to 60% so they look like spiritual chakra clones.
+
+Phase D: Compositing (The Assembly)
+We stack the layers in this specific order (Back to Front) to ensure the "Real You" is in front:
+
+Background: The original webcam feed (or a static background if you prefer).
+
+Layer 2 (Clone 1): Shifted Left, 60% opacity.
+
+Layer 3 (Clone 2): Shifted Right, 60% opacity.
+
+Layer 4 (Real User): The current live segmented body, 100% opacity.
+
+Layer 5 (UI): The guide image overlay.
