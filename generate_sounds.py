@@ -95,6 +95,45 @@ def generate_poof_sound(filename):
     print(f"  ✓ Created: {filename}")
 
 
+def generate_rasengan_sound(filename):
+    """
+    Generate a 'Rasengan' / spinning chakra ball sound.
+    Continuous swirling energy: low hum + high whine with rapid modulation.
+    """
+    sample_rate = 44100
+    duration = 3.0  # seconds
+    samples = []
+
+    for i in range(int(sample_rate * duration)):
+        t = i / sample_rate
+
+        # 1. Low hum (power core) - 120Hz oscillating slightly
+        freq_low = 120 + 20 * math.sin(2 * math.pi * 2 * t)
+        hum = 0.4 * math.sin(2 * math.pi * freq_low * t)
+
+        # 2. High whine (spinning shell) - 800Hz
+        freq_high = 800 + 100 * math.sin(2 * math.pi * 15 * t) # Rapid wobbling (15Hz LFO)
+        whine = 0.15 * math.sin(2 * math.pi * freq_high * t)
+
+        # 3. Turbulent noise (air displacement)
+        noise = 0.1 * (random.random() * 2 - 1)
+
+        # Apply amplitude modulation (tremolo) to simulate rotation
+        tremolo = 0.8 + 0.2 * math.sin(2 * math.pi * 10 * t) # 10Hz rotation
+
+        sample = (hum + whine + noise) * tremolo
+        
+        # Loop fade in/out slightly to avoid clicks if looped
+        envelope = 1.0
+        if t < 0.1: envelope = t / 0.1
+        elif t > duration - 0.1: envelope = (duration - t) / 0.1
+        
+        samples.append(int(sample * 16000 * envelope))
+
+    _write_wav(filename, samples, sample_rate)
+    print(f"  ✓ Created: {filename}")
+
+
 def _write_wav(filename, samples, sample_rate):
     """Write samples to a WAV file."""
     os.makedirs(os.path.dirname(filename), exist_ok=True)
@@ -113,6 +152,7 @@ if __name__ == '__main__':
 
     generate_success_sound(os.path.join(sounds_dir, 'success.wav'))
     generate_poof_sound(os.path.join(sounds_dir, 'poof.wav'))
+    generate_rasengan_sound(os.path.join(sounds_dir, 'rasengan.wav'))
 
     print("\n✅ All sound effects generated!")
     print(f"   Location: {sounds_dir}")

@@ -17,6 +17,7 @@ Requirements:
 import cv2
 import mediapipe as mp
 import numpy as np
+import math
 import time
 import winsound
 import threading
@@ -98,7 +99,13 @@ class ShadowCloneAR:
         self.text_start_time = 0
         self.poof_active = False         # Poof flash effect active?
         self.poof_start_time = 0
+        self.poof_start_time = 0
         self.waiting_for_poof = False    # Waiting for delay before poof?
+
+        # ── Rasengan State ─────────────────────────────────────
+        self.rasengan_active = False     # Is the Rasengan visible?
+        self.rasengan_charged = False    # Are hands in "charging" position?
+        self.rasengan_sound_thread = None
 
         # ── Clone Configuration ────────────────────────────────
         self.num_clones = 9
@@ -177,6 +184,24 @@ class ShadowCloneAR:
             if not os.path.exists(path):
                 print(f"⚠  Sound file missing: {path}")
                 print("   Run: python generate_sounds.py")
+
+    def play_rasengan_loop(self):
+        """Play the Rasengan sound loop."""
+        # Simple implementation: re-trigger every 2.8s
+        # In a real app, we'd loop seamlessly.
+        path = os.path.join(self.assets_dir, 'sounds', 'rasengan.wav')
+        if not os.path.exists(path): return
+
+        def _loop():
+            while self.rasengan_active:
+                try:
+                    winsound.PlaySound(path, winsound.SND_FILENAME)
+                except:
+                    break
+        
+        if self.rasengan_sound_thread is None or not self.rasengan_sound_thread.is_alive():
+            self.rasengan_sound_thread = threading.Thread(target=_loop, daemon=True)
+            self.rasengan_sound_thread.start()
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # PHASE B: HAND DETECTION — JUTSU ALGORITHM
@@ -284,6 +309,58 @@ class ShadowCloneAR:
         pinky_curled = lm[20].y > lm[18].y
 
         return index_extended and middle_extended and ring_curled and pinky_curled
+
+    def _is_fist(self, hand):
+        """Check if hand is a closed fist (all fingers curled)."""
+        # Simple heuristic: Tip is CLOSE to MCP (knuckle)
+        lm = hand.landmark
+        threshold = 0.12  # Distance threshold
+        
+        # Check all 4 fingers (Index to Pinky)
+        fingers_closed = True
+        for i in [8, 12, 16, 20]:
+            tip = lm[i]
+            mcp = lm[i - 3] # Corresponding MCP
+            dist = ((tip.x - mcp.x)**2 + (tip.y - mcp.y)**2)**0.5
+            if dist > threshold:
+                fingers_closed = False
+                break
+        return fingers_closed
+
+    def _is_open_palm(self, hand):
+        """Check if hand is open palm (all fingers extended)."""
+        lm = hand.landmark
+        # Check if tips are ABOVE PIP joints (for upright hand)
+        # Better: Check if Tip-Wrist distance > PIP-Wrist distance
+        wrist = lm[0]
+        fingers_open = True
+        for i in [8, 12, 16, 20]:
+            tip = lm[i]
+            pip = lm[i - 2]
+            dist_tip = ((tip.x - wrist.x)**2 + (tip.y - wrist.y)**2)**0.5
+            dist_pip = ((pip.x - wrist.x)**2 + (pip.y - wrist.y)**2)**0.5
+            if dist_tip < dist_pip * 1.2: # Tip should be significantly further
+                fingers_open = False
+                break
+                fingers_open = False
+                break
+        return fingers_open
+
+    def _is_namaste(self, left_hand, right_hand):
+        """Check if hands are in 'Namaste' / Prayer position (palms together)."""
+        # 1. Check if hands are close together
+        l_wrist = left_hand.landmark[0]
+        r_wrist = right_hand.landmark[0]
+        dist = ((l_wrist.x - r_wrist.x)**2 + (l_wrist.y - r_wrist.y)**2)**0.5
+        
+        if dist > 0.2: return False # Hands too far apart
+
+        # 2. Check if fingers are upright (tips above wrists)
+        # In screen coord, y increases downwards. So Tip Y < Wrist Y
+        if l_wrist.y < left_hand.landmark[8].y: return False
+        if r_wrist.y < right_hand.landmark[8].y: return False
+        
+        return True
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # PHASE C: SEGMENTATION & CLONE RENDERING
@@ -573,21 +650,103 @@ class ShadowCloneAR:
                 cv2.addWeighted(puff_overlay, puff_alpha, display,
                                1 - puff_alpha, 0, display)
 
-    def draw_status_bar(self, display, fps):
-        """Draw a minimal status bar at the bottom."""
+    def process_rasengan(self, display, hand_results):
+        """
+        Handle Rasengan logic:
+        1. CHARGING: Both fists closed.
+        2. ACTIVE: Right hand opens -> Rasengan appears.
+        3. RESET: Right hand closes or disappears.
+        4. STOP: Namaste (Prayer hands) -> Deactivate.
+        """
+        if not hand_results.multi_hand_landmarks:
+            self.rasengan_active = False
+            return
+
+        # Identify hands
+        left_hand = None
+        right_hand = None
+
+        for idx, hand_handedness in enumerate(hand_results.multi_handedness):
+            label = hand_handedness.classification[0].label
+            if label == 'Left': right_hand = hand_results.multi_hand_landmarks[idx]
+            else: left_hand = hand_results.multi_hand_landmarks[idx]
+
+        # 1. State Transitions
+        if left_hand and right_hand:
+            # Check for STOP (Namaste)
+            if self._is_namaste(left_hand, right_hand):
+                if self.rasengan_active:
+                    self.rasengan_active = False # Deactivate!
+                    self.rasengan_charged = True # Reset to charged state
+                return
+
+            # Check for Charging (Both Fists)
+            if self._is_fist(left_hand) and self._is_fist(right_hand):
+                self.rasengan_charged = True
+        
+        if self.rasengan_charged and right_hand:
+            # Check for Activation (Right Open)
+            if self._is_open_palm(right_hand):
+                if not self.rasengan_active:
+                    self.rasengan_active = True
+                    self.play_rasengan_loop()
+            elif self._is_fist(right_hand):
+                 self.rasengan_active = False 
+
+        # 2. Reset if Right hand lost?
+        if not right_hand:
+            self.rasengan_active = False
+            if not left_hand:
+                self.rasengan_charged = False
+
+        # 3. Draw Rasengan if active
+        if self.rasengan_active and right_hand:
+            self.draw_rasengan(display, right_hand)
+
+    def draw_rasengan(self, display, hand):
+        """Draw spinning blue chakra ball on the palm."""
+        lm = hand.landmark
         h, w = display.shape[:2]
+        
+        # Center = Midpoint between Wrist (0) and Middle MCP (9)
+        wrist = lm[0]
+        middle_mcp = lm[9]
+        cx = int((wrist.x + middle_mcp.x) / 2 * w)
+        cy = int((wrist.y + middle_mcp.y) / 2 * h)
+        
+        # Size based on hand size
+        hand_size = ((wrist.x - middle_mcp.x)**2 + (wrist.y - middle_mcp.y)**2)**0.5 * w
+        radius = int(hand_size * 1.3) # Smaller (was 2.5)
+        
+        # Draw Spinning Spirals
+        t = time.time() * 20 # Fast spin
+        
+        overlay = display.copy()
+        
+        # Outer turbulence
+        cv2.circle(overlay, (cx, cy), int(radius*1.2), (255, 200, 0), -1) # Faint outer cyan
+        
+        # Core layers
+        cv2.circle(overlay, (cx, cy), radius, (255, 100, 0), -1) # Blue
+        cv2.circle(overlay, (cx, cy), int(radius*0.7), (255, 255, 0), -1) # Cyan
+        cv2.circle(overlay, (cx, cy), int(radius*0.4), (255, 255, 200), -1) # White core
+        
+        # Dynamic Spiral Lines
+        for i in range(0, 360, 30):
+            # Spirals expanding out
+            angle_start = np.radians(i + t * 50)
+            angle_end = np.radians(i + t * 50 + 120)
+            
+            p1x = int(cx + math.cos(angle_start) * radius * 0.2)
+            p1y = int(cy + math.sin(angle_start) * radius * 0.2)
+            
+            p2x = int(cx + math.cos(angle_end) * radius * 1.0)
+            p2y = int(cy + math.sin(angle_end) * radius * 1.0)
+            
+            cv2.line(overlay, (p1x, p1y), (p2x, p2y), (255, 255, 255), 2)
 
-        # FPS counter
-        cv2.putText(display, f"FPS: {fps:.0f}",
-                    (w - 120, h - 15),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1, cv2.LINE_AA)
-
-        # Clone count
-        if self.clone_mode:
-            cv2.putText(display, f"Clones: {self.num_clones}",
-                        (w - 120, h - 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1, cv2.LINE_AA)
-
+        # Alpha Blend
+        cv2.addWeighted(overlay, 0.7, display, 0.3, 0, display)
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # SOUND EFFECTS
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -607,9 +766,20 @@ class ShadowCloneAR:
         thread = threading.Thread(target=_play, daemon=True)
         thread.start()
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # MAIN LOOP
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    def draw_status_bar(self, display, fps):
+        """Draw a minimal status bar at the bottom."""
+        h, w = display.shape[:2]
+
+        # FPS counter
+        cv2.putText(display, f"FPS: {fps:.0f}",
+                    (w - 120, h - 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1, cv2.LINE_AA)
+
+        # Clone count
+        if self.clone_mode:
+            cv2.putText(display, f"Clones: {self.num_clones}",
+                        (w - 120, h - 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1, cv2.LINE_AA)
 
     def run(self):
         """Main application loop."""
@@ -685,6 +855,9 @@ class ShadowCloneAR:
 
 
 
+            # ── Process Rasengan (State & Visuals) ─────────────
+            self.process_rasengan(display, hand_results)
+
             # ── Poof Effect ────────────────────────────────────
             if self.poof_active:
                 poof_elapsed = time.time() - self.poof_start_time
@@ -707,7 +880,7 @@ class ShadowCloneAR:
 
             # D key still works to disable clones (no visible button)
 
-            # ── Status Bar ─────────────────────────────────────
+    # ── Status Bar ─────────────────────────────────────
             self.draw_status_bar(display, fps)
 
             # ── Display ────────────────────────────────────────
